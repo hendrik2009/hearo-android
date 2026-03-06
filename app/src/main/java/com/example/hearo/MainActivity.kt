@@ -19,6 +19,10 @@ import com.example.hearo.ui.theme.HearoTheme
 
 private const val TAG = "HearoNfc"
 private const val PLAYLIST_NO_ITEM = "no item"
+
+/** Spotify context types that do not support offset (track/position). Use context URI only. */
+private fun isContextWithoutOffset(uri: String?): Boolean =
+    uri != null && uri.startsWith("spotify:artist:", ignoreCase = true)
 private const val PROGRESS_POLL_MS = 1000L
 private const val SPOTIFY_CHECK_DELAY_MS = 500L
 
@@ -27,6 +31,9 @@ class MainActivity : ComponentActivity() {
     companion object {
         @Volatile
         private var spotifyCheckedOnce = false
+        /** Cleared once per process so we require sign-in on app restart but not on activity recreate (e.g. rotation). */
+        @Volatile
+        private var spotifyClearedThisProcess = false
     }
 
     private val nfcReader by lazy { NfcReader(this) }
@@ -49,6 +56,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Require fresh sign-in when app process starts (not on activity recreate e.g. rotation)
+        if (!spotifyClearedThisProcess) {
+            spotifyAuth.signOut()
+            spotifyClearedThisProcess = true
+        }
         signedInState.value = spotifyAuth.hasToken()
         nfcReader.init(
             onTagDetected = ::handleTagDetected,
@@ -191,7 +203,9 @@ class MainActivity : ComponentActivity() {
                 spotifyWebApi.getDevices { devices ->
                     val deviceId = devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
                     val playAction = {
-                        if (resumeFromStart) {
+                        val noOffset = isContextWithoutOffset(savedUrl)
+                        if (resumeFromStart || noOffset) {
+                            // Start from context (no offset). Required for artist; also for new/unchanged context.
                             spotifyWebApi.playContextUri(savedUrl, deviceId = deviceId) { success ->
                                 if (!success) Log.w(TAG, "playContextUri failed for $savedUrl")
                                 else startProgressPolling(tagId, savedUrl)

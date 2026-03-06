@@ -19,9 +19,16 @@ class SpotifyAuth(private val context: Context) {
     fun hasToken(): Boolean = tokenStore.getAccessToken() != null
 
     fun getValidAccessToken(): String? {
-        var token = tokenStore.getAccessToken() ?: return null
+        var token = tokenStore.getAccessToken() ?: run {
+            Log.d(TAG, "getValidAccessToken: no stored token")
+            return null
+        }
         if (tokenStore.isAccessTokenExpired()) {
-            token = refreshAccessToken() ?: return null
+            Log.d(TAG, "getValidAccessToken: token expired, refreshing")
+            token = refreshAccessToken() ?: run {
+                Log.w(TAG, "getValidAccessToken: refresh failed")
+                return null
+            }
         }
         return token
     }
@@ -122,8 +129,12 @@ class SpotifyAuth(private val context: Context) {
             .build()
         return try {
             val response = okhttp3.OkHttpClient().newCall(request).execute()
-            if (!response.isSuccessful) return null
-            val json = JSONObject(response.body?.string() ?: return null)
+            val bodyStr = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                Log.w(TAG, "refreshAccessToken: ${response.code} $bodyStr")
+                return null
+            }
+            val json = JSONObject(bodyStr)
             val accessToken = json.optString("access_token").takeIf { it.isNotBlank() } ?: return null
             val newRefresh = json.optString("refresh_token").takeIf { it.isNotBlank() }
             val expiresIn = json.optInt("expires_in", 3600)
