@@ -3,11 +3,10 @@ package com.example.hearo
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -20,7 +19,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import com.example.hearo.ui.theme.HearoGreenDefault
 
 /** Shown while processing auth redirect; avoids flashing InitialScreen and uses theme background (no black). */
 @Composable
@@ -32,42 +30,46 @@ fun RedirectHandlingScreen() {
     )
 }
 
+/** Start screen: top 4/5 image (width 100%, proportional, top-center, crop if needed), bottom 1/5 white bar with Sign in button. */
 @Composable
 fun InitialScreen(
     onSignInClick: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Image(
-            painter = painterResource(id = R.drawable.hearo_teaser),
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentScale = ContentScale.Crop,
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color.White)
-                .padding(24.dp),
+                .fillMaxHeight(0.8f)
+                .align(Alignment.TopCenter)
+                .clipToBounds()
+                .background(Color(0xFFFFF8E7)),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.hearo_teaser),
+                contentDescription = null,
+                modifier = Modifier.fillMaxWidth(),
+                contentScale = ContentScale.FillWidth,
+                alignment = Alignment.TopCenter,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.2f)
+                .align(Alignment.BottomCenter)
+                .background(Color.White),
             contentAlignment = Alignment.Center,
         ) {
             Button(
                 onClick = onSignInClick,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 280.dp)
-                    .height(52.dp),
+                modifier = Modifier.widthIn(max = 280.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = HearoGreenDefault,
+                    containerColor = Color(0xFFFF0000),
                     contentColor = Color.White,
                 ),
-                elevation = ButtonDefaults.buttonElevation(
-                    defaultElevation = 2.dp,
-                    pressedElevation = 4.dp,
-                ),
             ) {
-                Text("Sign in", style = MaterialTheme.typography.titleMedium)
+                Text("Sign in")
             }
         }
     }

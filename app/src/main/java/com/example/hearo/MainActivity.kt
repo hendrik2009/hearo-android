@@ -1,6 +1,8 @@
 package com.example.hearo
 
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.view.WindowManager
 import android.os.Handler
@@ -9,10 +11,12 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.example.hearo.ui.theme.HearoTheme
@@ -29,7 +33,8 @@ private const val REFRESH_WHEN_UNDER_MS = 15 * 60 * 1000L
 private const val NO_DEVICE_RETRY_DELAY_MS = 2000L
 private const val PLAY_FAIL_RETRY_DELAY_MS = 1500L
 private const val AFTER_TRANSFER_DELAY_MS = 600L
-
+/** Delay before retry after launching Spotify so the app can start and register its device. */
+private const val SPOTIFY_LAUNCH_RETRY_DELAY_MS = 3000L
 class MainActivity : ComponentActivity() {
 
     companion object {
@@ -47,11 +52,13 @@ class MainActivity : ComponentActivity() {
         SpotifyController(this, SpotifyController.notificationListenerComponent(this))
     }
     private val nfcPlaylistRepository by lazy { NfcPlaylistRepository(this) }
+    private val preferredDeviceStore by lazy { PreferredDeviceStore(this) }
+    private val listeningTimeStore by lazy { ListeningTimeStore(this) }
 
     private val nfcIdState = mutableStateOf("")
     private val playlistUrlState = mutableStateOf("")
-    private val artistState = mutableStateOf("—")
-    private val trackTitleState = mutableStateOf("—")
+    private val artistState = mutableStateOf("Artist")
+    private val trackTitleState = mutableStateOf("Title")
     private val progressMsState = mutableStateOf(0L)
     private val durationMsState = mutableStateOf(0L)
     private val signedInState = mutableStateOf(false)
@@ -62,6 +69,21 @@ class MainActivity : ComponentActivity() {
     private val showSignInBannerState = mutableStateOf(false)
     /** True while processing auth redirect; show neutral screen to avoid flashing InitialScreen. */
     private val handlingRedirectState = mutableStateOf(false)
+    /** Preferred Spotify device: id for playback, display string for UI. */
+    private val preferredDeviceIdState = mutableStateOf<String?>(null)
+    private val preferredDeviceDisplayState = mutableStateOf("No preferred device")
+    /** True when device selection screen is shown. */
+    private val showDeviceSelectorState = mutableStateOf(false)
+    /** Current devices list for the selector (fetched when selector opens). */
+    private val deviceListForSelectorState = mutableStateOf<List<SpotifyDevice>>(emptyList())
+    /** Listening time: counter seconds since last reset. */
+    private val listeningCounterState = mutableStateOf(0L)
+    /** Formatted listening limit for UI (e.g. "1:30:00"). */
+    private val listeningLimitDisplayState = mutableStateOf("1:00:00")
+    /** True when counter reached limit: playback paused, controls blocked until reset. */
+    private val listeningLimitReachedState = mutableStateOf(false)
+    /** True when the listening limit time picker should be shown. */
+    private val showListeningLimitPickerState = mutableStateOf(false)
 
     private val progressHandler = Handler(Looper.getMainLooper())
     private var progressPollRunnable: Runnable? = null
@@ -170,8 +192,61 @@ class MainActivity : ComponentActivity() {
                                 onSkipFwd = {
                                     if (spotifyAuth.hasToken()) spotifyWebApi.skipNext()
                                     else spotifyController.skipToNext()
-                                }
+                                },
+                                preferredDeviceDisplay = preferredDeviceDisplayState.value,
+                                onEditPreferredDeviceClick = {
+                                    showDeviceSelectorState.value = true
+                                    spotifyWebApi.getDevices { deviceListForSelectorState.value = it }
+                                },
+                                listeningCounterDisplay = formatListeningTime(listeningCounterState.value),
+                                listeningLimitDisplay = listeningLimitDisplayState.value,
+                                listeningLimitReached = listeningLimitReachedState.value,
+                                listeningProgress = run {
+                                    val active = listeningTimeStore.getActiveLimitSeconds()
+                                    if (active <= 0) 0f else (listeningCounterState.value.toFloat() / active).coerceIn(0f, 1f)
+                                },
+                                onResetListeningTime = {
+                                    listeningTimeStore.applyReset()
+                                    listeningLimitReachedState.value = false
+                                    refreshListeningTimeDisplay()
+                                },
+                                onEditListeningLimitClick = { showListeningLimitPickerState.value = true }
                             )
+                            if (showListeningLimitPickerState.value) {
+                                ListeningLimitPickerDialog(
+                                    initialLimitSeconds = listeningTimeStore.getLimitSeconds(),
+                                    onConfirm = {
+                                        listeningTimeStore.setLimitSeconds(it)
+                                        listeningLimitDisplayState.value = formatListeningTime(it.toLong())
+                                        showListeningLimitPickerState.value = false
+                                    },
+                                    onDismiss = { showListeningLimitPickerState.value = false }
+                                )
+                            }
+                            if (showDeviceSelectorState.value) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.White)
+                                ) {
+                                    DeviceSelectionScreen(
+                                        currentDevices = deviceListForSelectorState.value,
+                                        currentPreferredId = preferredDeviceIdState.value,
+                                        onSave = { deviceId, deviceName, deviceType ->
+                                            preferredDeviceStore.setPreferredDevice(deviceId, deviceName, deviceType)
+                                            preferredDeviceIdState.value = deviceId
+                                            preferredDeviceDisplayState.value = when {
+                                                deviceId.isNullOrBlank() -> "No preferred device"
+                                                deviceName != null && deviceType != null -> "$deviceName ($deviceType)"
+                                                deviceName != null -> deviceName
+                                                else -> deviceId
+                                            }
+                                            showDeviceSelectorState.value = false
+                                        },
+                                        onCancel = { showDeviceSelectorState.value = false }
+                                    )
+                                }
+                            }
                         }
                     }
                     handlingRedirectState.value -> RedirectHandlingScreen()
@@ -182,12 +257,50 @@ class MainActivity : ComponentActivity() {
         intent?.let { tryHandleSpotifyRedirect(it) }
     }
 
+    /** Launches Spotify and brings the user back to Hearo. Bring-to-front is called immediately (same thread) so we're still in foreground and BAL does not block. */
+    private fun launchSpotifyAndReturnToHearo() {
+        spotifyController.launchSpotify()
+        bringHearoToFront()
+    }
+
+    private fun bringHearoToFront() {
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+    }
+
+    private fun formatListeningTime(seconds: Long): String {
+        val total = seconds.toInt().coerceAtLeast(0)
+        val h = total / 3600
+        val m = (total % 3600) / 60
+        val s = total % 60
+        return when {
+            h > 0 -> "$h:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+            else -> "${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+        }
+    }
+
+    private fun refreshListeningTimeDisplay() {
+        listeningCounterState.value = listeningTimeStore.getCounterSeconds()
+        listeningLimitDisplayState.value = formatListeningTime(listeningTimeStore.getLimitSeconds().toLong())
+        val active = listeningTimeStore.getActiveLimitSeconds()
+        if (listeningCounterState.value >= active) {
+            listeningLimitReachedState.value = true
+        }
+    }
+
+    private fun playLimitReachedSound() {
+        try {
+            val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
+            tone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+            progressHandler.postDelayed({ tone.release() }, 300)
+        } catch (_: Exception) { }
+    }
+
     private fun ensureSpotifyOnce() {
         progressHandler.postDelayed({
             if (spotifyCheckedOnce) return@postDelayed
             spotifyCheckedOnce = true
             if (!spotifyController.isSpotifyRunning()) {
-                spotifyController.launchSpotify()
+                launchSpotifyAndReturnToHearo()
             }
         }, SPOTIFY_CHECK_DELAY_MS)
     }
@@ -195,6 +308,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         signedInState.value = spotifyAuth.hasToken()
+        preferredDeviceIdState.value = preferredDeviceStore.getPreferredDeviceId()
+        preferredDeviceDisplayState.value = preferredDeviceStore.getPreferredDeviceDisplay() ?: "No preferred device"
+        if (listeningTimeStore.checkAndApplyMidnightReset()) {
+            listeningLimitReachedState.value = false
+        }
+        refreshListeningTimeDisplay()
         if (spotifyAuth.hasToken()) {
             val expiresAt = spotifyAuth.getExpiresAtMs()
             if (System.currentTimeMillis() >= expiresAt - REFRESH_WHEN_UNDER_MS) {
@@ -237,6 +356,11 @@ class MainActivity : ComponentActivity() {
             playlistUrlState.value = savedUrl
             Log.d("HearoPlaylist", "fetching playlist: tagId=$tagId, hasSaved=true, savedUrl=${savedUrl.take(60)}")
             if (spotifyAuth.hasToken()) {
+                if (listeningTimeStore.checkAndApplyMidnightReset()) {
+                    listeningLimitReachedState.value = false
+                }
+                refreshListeningTimeDisplay()
+                if (listeningLimitReachedState.value) return
                 val progress = nfcPlaylistRepository.getProgress(tagId)
                 val resumeFromStart = progress == null || progress.contextUri != savedUrl
                 val noOffset = isContextWithoutOffset(savedUrl)
@@ -246,6 +370,8 @@ class MainActivity : ComponentActivity() {
                             startProgressPolling(tagId, savedUrl)
                         } else {
                             if (withTransferRetry) {
+                                // Play failed (e.g. NO_ACTIVE_DEVICE). Launch Spotify so it can register, then retry.
+                                launchSpotifyAndReturnToHearo()
                                 progressHandler.postDelayed({
                                     spotifyWebApi.getDevices { retryDevices ->
                                         val targetId = retryDevices.firstOrNull()?.id
@@ -259,7 +385,7 @@ class MainActivity : ComponentActivity() {
                                             doPlay(null, false)
                                         }
                                     }
-                                }, PLAY_FAIL_RETRY_DELAY_MS)
+                                }, SPOTIFY_LAUNCH_RETRY_DELAY_MS)
                             } else {
                                 Log.w(TAG, "playContextUri failed for $savedUrl")
                             }
@@ -277,17 +403,50 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                spotifyWebApi.getDevices { devices ->
-                    val deviceId = devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
-                    if (deviceId == null && devices.isEmpty()) {
-                        progressHandler.postDelayed({
-                            spotifyWebApi.getDevices { retryDevices ->
-                                val retryId = retryDevices.firstOrNull { it.isActive }?.id ?: retryDevices.firstOrNull()?.id
-                                doPlay(retryId, true)
+                val preferredId = preferredDeviceIdState.value
+                if (!preferredId.isNullOrBlank()) {
+                    // Always try saved device first: transfer to it then play. Works even when getDevices is empty or device not yet "active".
+                    spotifyWebApi.transferPlayback(preferredId) { transferOk ->
+                        if (transferOk) {
+                            progressHandler.postDelayed({ doPlay(preferredId, true) }, AFTER_TRANSFER_DELAY_MS)
+                        } else {
+                            // Transfer failed (e.g. Spotify not running, device not found). Launch Spotify and retry.
+                            launchSpotifyAndReturnToHearo()
+                            progressHandler.postDelayed({
+                                spotifyWebApi.transferPlayback(preferredId) {
+                                    progressHandler.postDelayed({ doPlay(preferredId, true) }, AFTER_TRANSFER_DELAY_MS)
+                                }
+                            }, SPOTIFY_LAUNCH_RETRY_DELAY_MS)
+                        }
+                    }
+                } else {
+                    spotifyWebApi.getDevices { devices ->
+                        val deviceId = devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
+                        if (deviceId == null && devices.isEmpty()) {
+                            // No devices yet (e.g. Spotify not started). Launch Spotify and retry after it can register.
+                            launchSpotifyAndReturnToHearo()
+                            progressHandler.postDelayed({
+                                spotifyWebApi.getDevices { retryDevices ->
+                                    val retryId = retryDevices.firstOrNull { it.isActive }?.id ?: retryDevices.firstOrNull()?.id
+                                    doPlay(retryId, true)
+                                }
+                            }, SPOTIFY_LAUNCH_RETRY_DELAY_MS)
+                        } else if (!deviceId.isNullOrBlank()) {
+                            spotifyWebApi.transferPlayback(deviceId) { transferOk ->
+                                if (transferOk) {
+                                    progressHandler.postDelayed({ doPlay(deviceId, true) }, AFTER_TRANSFER_DELAY_MS)
+                                } else {
+                                    launchSpotifyAndReturnToHearo()
+                                    progressHandler.postDelayed({
+                                        spotifyWebApi.transferPlayback(deviceId) {
+                                            progressHandler.postDelayed({ doPlay(deviceId, true) }, AFTER_TRANSFER_DELAY_MS)
+                                        }
+                                    }, SPOTIFY_LAUNCH_RETRY_DELAY_MS)
+                                }
                             }
-                        }, NO_DEVICE_RETRY_DELAY_MS)
-                    } else {
-                        doPlay(deviceId, true)
+                        } else {
+                            doPlay(null, true)
+                        }
                     }
                 }
             }
@@ -331,8 +490,8 @@ class MainActivity : ComponentActivity() {
         playlistUrlState.value = ""
         justSavedState.value = false
         showSignInBannerState.value = false
-        artistState.value = "—"
-        trackTitleState.value = "—"
+        artistState.value = "Artist"
+        trackTitleState.value = "Title"
         progressMsState.value = 0L
         durationMsState.value = 0L
     }
@@ -375,13 +534,13 @@ class MainActivity : ComponentActivity() {
 
     private fun updateTrackDisplay(state: com.example.hearo.PlayerState?) {
         if (state == null) {
-            artistState.value = "—"
-            trackTitleState.value = "—"
+            artistState.value = "Artist"
+            trackTitleState.value = "Title"
             progressMsState.value = 0L
             durationMsState.value = 0L
         } else {
-            artistState.value = state.artistName?.takeIf { it.isNotBlank() } ?: "—"
-            trackTitleState.value = state.trackName?.takeIf { it.isNotBlank() } ?: "—"
+            artistState.value = state.artistName?.takeIf { it.isNotBlank() } ?: "Artist"
+            trackTitleState.value = state.trackName?.takeIf { it.isNotBlank() } ?: "Title"
             progressMsState.value = state.progressMs
             durationMsState.value = state.durationMs
         }
@@ -403,6 +562,23 @@ class MainActivity : ComponentActivity() {
                             state.progressMs
                         )
                         updateTrackDisplay(state)
+                        if (state.isPlaying) {
+                            if (listeningTimeStore.getLastResetMillis() == 0L) {
+                                listeningTimeStore.applyReset()
+                            } else if (listeningTimeStore.checkAndApplyMidnightReset()) {
+                                listeningLimitReachedState.value = false
+                            }
+                            listeningTimeStore.addCounterSeconds(1L)
+                            listeningCounterState.value = listeningTimeStore.getCounterSeconds()
+                            val active = listeningTimeStore.getActiveLimitSeconds()
+                            if (listeningTimeStore.getCounterSeconds() >= active) {
+                                if (!listeningLimitReachedState.value) {
+                                    listeningLimitReachedState.value = true
+                                    spotifyWebApi.pause { }
+                                    playLimitReachedSound()
+                                }
+                            }
+                        }
                     } else if (nfcIdState.value == tagId) {
                         updateTrackDisplay(state)
                     }

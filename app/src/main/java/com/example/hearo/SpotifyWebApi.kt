@@ -24,7 +24,8 @@ data class PlayerState(
     val trackName: String?,
     val artistName: String?,
     val progressMs: Long,
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val isPlaying: Boolean = false
 )
 
 /**
@@ -196,7 +197,8 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
             val artistName = item?.optJSONArray("artists")?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() }
             val progressMs = json.optLong("progress_ms", 0L)
             val durationMs = item?.optLong("duration_ms", 0L) ?: 0L
-            PlayerState(contextUri, trackUri, trackName, artistName, progressMs, durationMs)
+            val isPlaying = json.optBoolean("is_playing", false)
+            PlayerState(contextUri, trackUri, trackName, artistName, progressMs, durationMs, isPlaying)
         } catch (_: Exception) { null }
     }
 
