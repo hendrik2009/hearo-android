@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Hearo" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Hearo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowAnimationStyle">@style/Theme.Hearo.WindowAnimations</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+
+    <style name="Theme.Hearo.WindowAnimations" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/instant</item>
+        <item name="android:activityOpenExitAnimation">@anim/instant</item>
+        <item name="android:activityCloseEnterAnimation">@anim/instant</item>
+        <item name="android:activityCloseExitAnimation">@anim/instant</item>
+    </style>
 </resources>

@@ -1,5 +1,6 @@
 package com.example.hearo
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -15,6 +16,10 @@ import java.util.concurrent.Executors
 class SpotifyAuth(private val context: Context) {
 
     private val tokenStore by lazy { SpotifyTokenStore(context) }
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Invoked on main thread when refresh fails (e.g. revoked token). Activity should clear UI and show Sign in. */
+    var onRefreshFailed: (() -> Unit)? = null
 
     fun hasToken(): Boolean = tokenStore.getAccessToken() != null
 
@@ -27,10 +32,25 @@ class SpotifyAuth(private val context: Context) {
             Log.d(TAG, "getValidAccessToken: token expired, refreshing")
             token = refreshAccessToken() ?: run {
                 Log.w(TAG, "getValidAccessToken: refresh failed")
+                mainHandler.post { onRefreshFailed?.invoke() }
                 return null
             }
         }
         return token
+    }
+
+    /** Expiry time (ms) we store; used for scheduling. */
+    fun getExpiresAtMs(): Long = tokenStore.getExpiresAtMs()
+
+    /** Nominal token lifetime in seconds from Spotify (e.g. 3600). */
+    fun getExpiresInSeconds(): Int = tokenStore.getExpiresInSeconds()
+
+    /** When to run proactive refresh (epoch ms). Refresh at 3/4 of lifetime. Null if no token. */
+    fun getRefreshDueAtMs(): Long? {
+        if (!hasToken()) return null
+        val expiresAt = tokenStore.getExpiresAtMs()
+        val lifetimeMs = tokenStore.getExpiresInSeconds() * 1000L
+        return expiresAt - (lifetimeMs / 4)
     }
 
     fun signOut() {
@@ -52,6 +72,7 @@ class SpotifyAuth(private val context: Context) {
             "&code_challenge_method=S256" +
             "&state=${Uri.encode(state)}"
         CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(authUrl))
+        (context as? Activity)?.overridePendingTransition(0, 0)
     }
 
     fun handleRedirect(intent: Intent?, onResult: (Boolean) -> Unit) {

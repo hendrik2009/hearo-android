@@ -14,3 +14,6 @@ val Pink40 = Color(0xFF7D5260)
 val HearoGreenDefault = Color(0xFF26d454)
 val HearoGreenPressed = Color(0xFF07f747)
 val HearoGreenInactive = Color(0xFF76ab84)
+
+/** Player UI: red outline and content (per design). */
+val HearoRed = Color(0xFFB71C1C)

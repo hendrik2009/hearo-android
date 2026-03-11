@@ -21,6 +21,8 @@ data class SpotifyDevice(val id: String, val name: String?, val type: String?, v
 data class PlayerState(
     val contextUri: String?,
     val trackUri: String?,
+    val trackName: String?,
+    val artistName: String?,
     val progressMs: Long,
     val durationMs: Long = 0L
 )
@@ -77,6 +79,35 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
                 val bodyStr = response.body?.string() ?: ""
                 val ok = response.code in 200..204
                 if (!ok) Log.w(TAG, "playContextUri: ${response.code} $bodyStr")
+                android.os.Handler(android.os.Looper.getMainLooper()).post { callback(ok) }
+            }
+        })
+    }
+
+    /**
+     * Transfers playback to [deviceId] so it becomes the active device. Call before play when you get NO_ACTIVE_DEVICE.
+     */
+    fun transferPlayback(deviceId: String, callback: (Boolean) -> Unit) {
+        val token = auth.getValidAccessToken()
+        if (token == null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+        val body = JSONObject().put("device_ids", JSONArray().put(deviceId)).put("play", false).toString()
+        val request = Request.Builder()
+            .url("https://api.spotify.com/v1/me/player")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .put(body.toRequestBody("application/json".toMediaType()))
+            .build()
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.w(TAG, "transferPlayback onFailure: ${e.message}")
+                android.os.Handler(android.os.Looper.getMainLooper()).post { callback(false) }
+            }
+            override fun onResponse(call: Call, response: Response) {
+                val ok = response.code in 200..204
+                if (!ok) Log.w(TAG, "transferPlayback: ${response.code} ${response.body?.string()?.take(150)}")
                 android.os.Handler(android.os.Looper.getMainLooper()).post { callback(ok) }
             }
         })
@@ -161,9 +192,11 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
             val contextUri = context?.optString("uri")?.takeIf { it.isNotBlank() }
             val item = json.optJSONObject("item")
             val trackUri = item?.optString("uri")?.takeIf { it.isNotBlank() }
+            val trackName = item?.optString("name")?.takeIf { it.isNotBlank() }
+            val artistName = item?.optJSONArray("artists")?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() }
             val progressMs = json.optLong("progress_ms", 0L)
             val durationMs = item?.optLong("duration_ms", 0L) ?: 0L
-            PlayerState(contextUri, trackUri, progressMs, durationMs)
+            PlayerState(contextUri, trackUri, trackName, artistName, progressMs, durationMs)
         } catch (_: Exception) { null }
     }
 

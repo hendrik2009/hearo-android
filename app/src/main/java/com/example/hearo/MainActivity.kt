@@ -25,6 +25,10 @@ private fun isContextWithoutOffset(uri: String?): Boolean =
     uri != null && uri.startsWith("spotify:artist:", ignoreCase = true)
 private const val PROGRESS_POLL_MS = 1000L
 private const val SPOTIFY_CHECK_DELAY_MS = 500L
+private const val REFRESH_WHEN_UNDER_MS = 15 * 60 * 1000L
+private const val NO_DEVICE_RETRY_DELAY_MS = 2000L
+private const val PLAY_FAIL_RETRY_DELAY_MS = 1500L
+private const val AFTER_TRANSFER_DELAY_MS = 600L
 
 class MainActivity : ComponentActivity() {
 
@@ -46,12 +50,22 @@ class MainActivity : ComponentActivity() {
 
     private val nfcIdState = mutableStateOf("")
     private val playlistUrlState = mutableStateOf("")
-    private val currentTrackState = mutableStateOf("—")
+    private val artistState = mutableStateOf("—")
+    private val trackTitleState = mutableStateOf("—")
+    private val progressMsState = mutableStateOf(0L)
+    private val durationMsState = mutableStateOf(0L)
     private val signedInState = mutableStateOf(false)
     private val nfcReadyState = mutableStateOf(true)
+    /** True after Save is clicked for current tag; reset when tag is removed so Save is shown again when tag is presented. */
+    private val justSavedState = mutableStateOf(false)
+    /** Show "Please sign in before playing" when a tag was tapped while signed out. */
+    private val showSignInBannerState = mutableStateOf(false)
+    /** True while processing auth redirect; show neutral screen to avoid flashing InitialScreen. */
+    private val handlingRedirectState = mutableStateOf(false)
 
     private val progressHandler = Handler(Looper.getMainLooper())
     private var progressPollRunnable: Runnable? = null
+    private var proactiveRefreshRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +76,7 @@ class MainActivity : ComponentActivity() {
             spotifyClearedThisProcess = true
         }
         signedInState.value = spotifyAuth.hasToken()
+        spotifyAuth.onRefreshFailed = { handleSpotifyRefreshFailed() }
         nfcReader.init(
             onTagDetected = ::handleTagDetected,
             onTagRemoved = {
@@ -97,21 +112,28 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             HearoTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Box(Modifier.padding(innerPadding)) {
-                        HearoScreen(
-                                trackTitle = currentTrackState.value,
+                when {
+                    signedInState.value -> Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                        Box(Modifier.padding(innerPadding)) {
+                            HearoScreen(
+                                artistName = artistState.value,
+                                trackTitle = trackTitleState.value,
+                                progressMs = progressMsState.value,
+                                durationMs = durationMsState.value,
                                 nfcId = nfcIdState.value,
                                 playlistUrl = playlistUrlState.value,
                                 signedIn = signedInState.value,
                                 nfcReady = nfcReadyState.value,
+                                showSignInBanner = showSignInBannerState.value,
                                 onSignInClick = { spotifyAuth.signIn(BuildConfig.SPOTIFY_CLIENT_ID) },
                                 onSignOutClick = {
+                                    cancelProactiveRefresh()
+                                    clearTagUi()
                                     spotifyAuth.signOut()
                                     signedInState.value = false
                                 },
                                 playlistFieldEnabled = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null,
-                                showSaveButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null,
+                                showSaveButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null && !justSavedState.value,
                                 saveButtonEnabled = nfcIdState.value.isNotEmpty() &&
                                     playlistUrlState.value.isNotBlank() &&
                                     playlistUrlState.value != PLAYLIST_NO_ITEM,
@@ -123,15 +145,14 @@ class MainActivity : ComponentActivity() {
                                     if (id.isNotEmpty() && url.isNotBlank() && url != PLAYLIST_NO_ITEM) {
                                         nfcPlaylistRepository.setPlaylistUrl(id, url)
                                         playlistUrlState.value = url
+                                        justSavedState.value = true
                                     }
                                 },
                                 onDetachClick = {
                                     val id = nfcIdState.value
                                     if (id.isNotEmpty()) {
                                         nfcPlaylistRepository.remove(id)
-                                        fetchCurrentPlaylistUri { uri ->
-                                            playlistUrlState.value = uri ?: PLAYLIST_NO_ITEM
-                                        }
+                                        playlistUrlState.value = ""
                                     }
                                 },
                                 onSkipBack = {
@@ -151,12 +172,14 @@ class MainActivity : ComponentActivity() {
                                     else spotifyController.skipToNext()
                                 }
                             )
+                        }
                     }
+                    handlingRedirectState.value -> RedirectHandlingScreen()
+                    else -> InitialScreen(onSignInClick = { spotifyAuth.signIn(BuildConfig.SPOTIFY_CLIENT_ID) })
                 }
             }
         }
         intent?.let { tryHandleSpotifyRedirect(it) }
-        ensureSpotifyOnce()
     }
 
     private fun ensureSpotifyOnce() {
@@ -165,9 +188,6 @@ class MainActivity : ComponentActivity() {
             spotifyCheckedOnce = true
             if (!spotifyController.isSpotifyRunning()) {
                 spotifyController.launchSpotify()
-                progressHandler.postDelayed({
-                    startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                }, 200)
             }
         }, SPOTIFY_CHECK_DELAY_MS)
     }
@@ -175,11 +195,23 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         signedInState.value = spotifyAuth.hasToken()
-        nfcReader.enableTagDetection()
+        if (spotifyAuth.hasToken()) {
+            val expiresAt = spotifyAuth.getExpiresAtMs()
+            if (System.currentTimeMillis() >= expiresAt - REFRESH_WHEN_UNDER_MS) {
+                runProactiveRefreshNow()
+            } else {
+                scheduleProactiveRefresh()
+            }
+            nfcReader.enableTagDetection()
+            spotifyWebApi.getPlayerState { updateTrackDisplay(it) }
+        } else {
+            nfcReader.disableTagDetection()
+        }
     }
 
     override fun onPause() {
         stopProgressPolling()
+        cancelProactiveRefresh()
         nfcReader.disableTagDetection()
         super.onPause()
     }
@@ -192,7 +224,14 @@ class MainActivity : ComponentActivity() {
 
     private fun handleTagDetected(tagId: String) {
         Log.d(TAG, "handleTagDetected id=$tagId")
+        if (tagId != nfcIdState.value) justSavedState.value = false
         nfcIdState.value = tagId
+        if (!spotifyAuth.hasToken()) {
+            showSignInBannerState.value = true
+            val savedUrl = nfcPlaylistRepository.getPlaylistUrl(tagId)
+            if (savedUrl != null) playlistUrlState.value = savedUrl
+            return
+        }
         val savedUrl = nfcPlaylistRepository.getPlaylistUrl(tagId)
         if (savedUrl != null) {
             playlistUrlState.value = savedUrl
@@ -200,32 +239,57 @@ class MainActivity : ComponentActivity() {
             if (spotifyAuth.hasToken()) {
                 val progress = nfcPlaylistRepository.getProgress(tagId)
                 val resumeFromStart = progress == null || progress.contextUri != savedUrl
-                spotifyWebApi.getDevices { devices ->
-                    val deviceId = devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
-                    val playAction = {
-                        val noOffset = isContextWithoutOffset(savedUrl)
-                        if (resumeFromStart || noOffset) {
-                            // Start from context (no offset). Required for artist; also for new/unchanged context.
-                            spotifyWebApi.playContextUri(savedUrl, deviceId = deviceId) { success ->
-                                if (!success) Log.w(TAG, "playContextUri failed for $savedUrl")
-                                else startProgressPolling(tagId, savedUrl)
-                            }
+                val noOffset = isContextWithoutOffset(savedUrl)
+                fun doPlay(deviceId: String?, withTransferRetry: Boolean) {
+                    val onPlayDone: (Boolean) -> Unit = { success ->
+                        if (success) {
+                            startProgressPolling(tagId, savedUrl)
                         } else {
-                            spotifyWebApi.playContextUri(
-                                savedUrl,
-                                progress.trackUri,
-                                progress.progressMs,
-                                deviceId = deviceId
-                            ) { success ->
-                                if (!success) Log.w(TAG, "playContextUri (resume) failed for $savedUrl")
-                                else startProgressPolling(tagId, savedUrl)
+                            if (withTransferRetry) {
+                                progressHandler.postDelayed({
+                                    spotifyWebApi.getDevices { retryDevices ->
+                                        val targetId = retryDevices.firstOrNull()?.id
+                                        if (!targetId.isNullOrBlank()) {
+                                            spotifyWebApi.transferPlayback(targetId) {
+                                                progressHandler.postDelayed({
+                                                    doPlay(targetId, false)
+                                                }, AFTER_TRANSFER_DELAY_MS)
+                                            }
+                                        } else {
+                                            doPlay(null, false)
+                                        }
+                                    }
+                                }, PLAY_FAIL_RETRY_DELAY_MS)
+                            } else {
+                                Log.w(TAG, "playContextUri failed for $savedUrl")
                             }
                         }
                     }
-                    playAction()
+                    if (resumeFromStart || noOffset) {
+                        spotifyWebApi.playContextUri(savedUrl, deviceId = deviceId, callback = onPlayDone)
+                    } else {
+                        spotifyWebApi.playContextUri(
+                            savedUrl,
+                            progress!!.trackUri,
+                            progress.progressMs,
+                            deviceId = deviceId,
+                            callback = onPlayDone
+                        )
+                    }
                 }
-            } else {
-                spotifyController.playUri(savedUrl)
+                spotifyWebApi.getDevices { devices ->
+                    val deviceId = devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
+                    if (deviceId == null && devices.isEmpty()) {
+                        progressHandler.postDelayed({
+                            spotifyWebApi.getDevices { retryDevices ->
+                                val retryId = retryDevices.firstOrNull { it.isActive }?.id ?: retryDevices.firstOrNull()?.id
+                                doPlay(retryId, true)
+                            }
+                        }, NO_DEVICE_RETRY_DELAY_MS)
+                    } else {
+                        doPlay(deviceId, true)
+                    }
+                }
             }
         } else {
             Log.d("HearoPlaylist", "fetching playlist: tagId=$tagId, hasSaved=false")
@@ -250,10 +314,14 @@ class MainActivity : ComponentActivity() {
         val data = intent?.data ?: return
         if (data.scheme != "hearo" || data.host != "callback") return
         Log.d(TAG, "Received Spotify redirect intent, handling...")
+        handlingRedirectState.value = true
         spotifyAuth.handleRedirect(intent) { success ->
+            handlingRedirectState.value = false
             if (success) {
                 signedInState.value = true
+                showSignInBannerState.value = false
                 setIntent(Intent())
+                nfcReader.enableTagDetection()
             }
         }
     }
@@ -261,6 +329,62 @@ class MainActivity : ComponentActivity() {
     private fun clearTagUi() {
         nfcIdState.value = ""
         playlistUrlState.value = ""
+        justSavedState.value = false
+        showSignInBannerState.value = false
+        artistState.value = "—"
+        trackTitleState.value = "—"
+        progressMsState.value = 0L
+        durationMsState.value = 0L
+    }
+
+    private fun handleSpotifyRefreshFailed() {
+        spotifyAuth.signOut()
+        signedInState.value = false
+        cancelProactiveRefresh()
+    }
+
+    private fun runProactiveRefreshNow() {
+        Thread {
+            val token = spotifyAuth.refreshAccessToken()
+            progressHandler.post {
+                if (token != null) {
+                    scheduleProactiveRefresh()
+                } else {
+                    handleSpotifyRefreshFailed()
+                }
+            }
+        }.start()
+    }
+
+    private fun scheduleProactiveRefresh() {
+        if (!spotifyAuth.hasToken()) return
+        val dueAt = spotifyAuth.getRefreshDueAtMs() ?: return
+        val delay = dueAt - System.currentTimeMillis()
+        proactiveRefreshRunnable = Runnable { runProactiveRefreshNow() }
+        if (delay <= 0) {
+            runProactiveRefreshNow()
+        } else {
+            progressHandler.postDelayed(proactiveRefreshRunnable!!, delay)
+        }
+    }
+
+    private fun cancelProactiveRefresh() {
+        proactiveRefreshRunnable?.let { progressHandler.removeCallbacks(it) }
+        proactiveRefreshRunnable = null
+    }
+
+    private fun updateTrackDisplay(state: com.example.hearo.PlayerState?) {
+        if (state == null) {
+            artistState.value = "—"
+            trackTitleState.value = "—"
+            progressMsState.value = 0L
+            durationMsState.value = 0L
+        } else {
+            artistState.value = state.artistName?.takeIf { it.isNotBlank() } ?: "—"
+            trackTitleState.value = state.trackName?.takeIf { it.isNotBlank() } ?: "—"
+            progressMsState.value = state.progressMs
+            durationMsState.value = state.durationMs
+        }
     }
 
     private fun startProgressPolling(tagId: String, contextUri: String) {
@@ -278,6 +402,9 @@ class MainActivity : ComponentActivity() {
                             state.trackUri,
                             state.progressMs
                         )
+                        updateTrackDisplay(state)
+                    } else if (nfcIdState.value == tagId) {
+                        updateTrackDisplay(state)
                     }
                     if (nfcIdState.value == tagId) {
                         progressHandler.postDelayed(this, PROGRESS_POLL_MS)
