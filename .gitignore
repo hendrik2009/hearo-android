@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Spotify Client ID: copy spotify.secrets.properties.example to this file and set your ID
+spotify.secrets.properties
+/spotify.secrets.properties.example

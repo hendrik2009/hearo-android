@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Hearo launcher: sampled from Hearo-Head artwork -->
+    <color name="hearo_launcher_blue">#FF4343FF</color>
 </resources>

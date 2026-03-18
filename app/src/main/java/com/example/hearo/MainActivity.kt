@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private val nfcPlaylistRepository by lazy { NfcPlaylistRepository(this) }
     private val preferredDeviceStore by lazy { PreferredDeviceStore(this) }
     private val listeningTimeStore by lazy { ListeningTimeStore(this) }
+    private val tapSound by lazy { TapSound(this) }
 
     private val nfcIdState = mutableStateOf("")
     private val playlistUrlState = mutableStateOf("")
@@ -84,6 +85,7 @@ class MainActivity : ComponentActivity() {
     private val listeningLimitReachedState = mutableStateOf(false)
     /** True when the listening limit time picker should be shown. */
     private val showListeningLimitPickerState = mutableStateOf(false)
+    private val showSettingsScreenState = mutableStateOf(false)
 
     private val progressHandler = Handler(Looper.getMainLooper())
     private var progressPollRunnable: Runnable? = null
@@ -143,39 +145,19 @@ class MainActivity : ComponentActivity() {
                                 progressMs = progressMsState.value,
                                 durationMs = durationMsState.value,
                                 nfcId = nfcIdState.value,
-                                playlistUrl = playlistUrlState.value,
                                 signedIn = signedInState.value,
                                 nfcReady = nfcReadyState.value,
                                 showSignInBanner = showSignInBannerState.value,
                                 onSignInClick = { spotifyAuth.signIn(BuildConfig.SPOTIFY_CLIENT_ID) },
                                 onSignOutClick = {
                                     cancelProactiveRefresh()
+                                    stopProgressPolling()
                                     clearTagUi()
+                                    // Stop playback if playing (Web API + MediaController fallback)
+                                    spotifyWebApi.pause { }
+                                    spotifyController.pause()
                                     spotifyAuth.signOut()
                                     signedInState.value = false
-                                },
-                                playlistFieldEnabled = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null,
-                                showSaveButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null && !justSavedState.value,
-                                saveButtonEnabled = nfcIdState.value.isNotEmpty() &&
-                                    playlistUrlState.value.isNotBlank() &&
-                                    playlistUrlState.value != PLAYLIST_NO_ITEM,
-                                showDetachButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) != null,
-                                onPlaylistUrlChange = { playlistUrlState.value = it },
-                                onSaveClick = {
-                                    val id = nfcIdState.value
-                                    val url = playlistUrlState.value
-                                    if (id.isNotEmpty() && url.isNotBlank() && url != PLAYLIST_NO_ITEM) {
-                                        nfcPlaylistRepository.setPlaylistUrl(id, url)
-                                        playlistUrlState.value = url
-                                        justSavedState.value = true
-                                    }
-                                },
-                                onDetachClick = {
-                                    val id = nfcIdState.value
-                                    if (id.isNotEmpty()) {
-                                        nfcPlaylistRepository.remove(id)
-                                        playlistUrlState.value = ""
-                                    }
                                 },
                                 onSkipBack = {
                                     if (spotifyAuth.hasToken()) spotifyWebApi.skipPrevious()
@@ -193,28 +175,73 @@ class MainActivity : ComponentActivity() {
                                     if (spotifyAuth.hasToken()) spotifyWebApi.skipNext()
                                     else spotifyController.skipToNext()
                                 },
-                                preferredDeviceDisplay = preferredDeviceDisplayState.value,
-                                onEditPreferredDeviceClick = {
-                                    showDeviceSelectorState.value = true
-                                    spotifyWebApi.getDevices { deviceListForSelectorState.value = it }
-                                },
-                                listeningCounterDisplay = formatListeningTime(listeningCounterState.value),
-                                listeningLimitDisplay = listeningLimitDisplayState.value,
                                 listeningLimitReached = listeningLimitReachedState.value,
                                 listeningProgress = run {
                                     val active = listeningTimeStore.getActiveLimitSeconds()
-                                    if (active <= 0) 0f else (listeningCounterState.value.toFloat() / active).coerceIn(0f, 1f)
+                                    if (active <= 0) 1f else ((active - listeningCounterState.value).toFloat() / active).coerceIn(0f, 1f)
                                 },
-                                onResetListeningTime = {
-                                    listeningTimeStore.applyReset()
-                                    listeningLimitReachedState.value = false
-                                    refreshListeningTimeDisplay()
-                                },
-                                onEditListeningLimitClick = { showListeningLimitPickerState.value = true }
+                                tagHasPlaylist = nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) != null,
+                                onTapSound = { tapSound.play() },
+                                onSeekRepeatSound = { tapSound.playSeekRepeat() },
+                                onSettingsClick = { showSettingsScreenState.value = true }
                             )
+                            if (showSettingsScreenState.value) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    SettingsScreen(
+                                        onBack = { showSettingsScreenState.value = false },
+                                        onTapSound = { tapSound.play() },
+                                        nfcId = nfcIdState.value,
+                                        playlistUrl = playlistUrlState.value,
+                                        showSaveButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) == null && !justSavedState.value,
+                                        saveButtonEnabled = nfcIdState.value.isNotEmpty() &&
+                                            playlistUrlState.value.isNotBlank() &&
+                                            playlistUrlState.value != PLAYLIST_NO_ITEM,
+                                        showDetachButton = nfcIdState.value.isNotEmpty() && nfcPlaylistRepository.getPlaylistUrl(nfcIdState.value) != null,
+                                        onSaveClick = {
+                                            val id = nfcIdState.value
+                                            val url = playlistUrlState.value
+                                            if (id.isNotEmpty() && url.isNotBlank() && url != PLAYLIST_NO_ITEM) {
+                                                nfcPlaylistRepository.setPlaylistUrl(id, url)
+                                                playlistUrlState.value = url
+                                                justSavedState.value = true
+                                            }
+                                        },
+                                        onDetachClick = {
+                                            val id = nfcIdState.value
+                                            if (id.isNotEmpty()) {
+                                                nfcPlaylistRepository.remove(id)
+                                                playlistUrlState.value = ""
+                                            }
+                                        },
+                                        preferredDeviceDisplay = preferredDeviceDisplayState.value,
+                                        onEditPreferredDeviceClick = {
+                                            showDeviceSelectorState.value = true
+                                            spotifyWebApi.getDevices { deviceListForSelectorState.value = it }
+                                        },
+                                        listeningCounterDisplay = run {
+                                            val active = listeningTimeStore.getActiveLimitSeconds()
+                                            val left = (active - listeningCounterState.value).coerceAtLeast(0L)
+                                            formatListeningTime(left)
+                                        },
+                                        listeningLimitDisplay = listeningLimitDisplayState.value,
+                                        listeningLimitReached = listeningLimitReachedState.value,
+                                        listeningProgress = run {
+                                            val active = listeningTimeStore.getActiveLimitSeconds()
+                                            if (active <= 0) 1f else ((active - listeningCounterState.value).toFloat() / active).coerceIn(0f, 1f)
+                                        },
+                                        onResetListeningTime = {
+                                            listeningTimeStore.applyReset()
+                                            listeningLimitReachedState.value = false
+                                            refreshListeningTimeDisplay()
+                                        },
+                                        onEditListeningLimitClick = { showListeningLimitPickerState.value = true }
+                                    )
+                                }
+                            }
                             if (showListeningLimitPickerState.value) {
                                 ListeningLimitPickerDialog(
                                     initialLimitSeconds = listeningTimeStore.getLimitSeconds(),
+                                    onTapSound = { tapSound.play() },
                                     onConfirm = {
                                         listeningTimeStore.setLimitSeconds(it)
                                         listeningLimitDisplayState.value = formatListeningTime(it.toLong())
@@ -232,6 +259,7 @@ class MainActivity : ComponentActivity() {
                                     DeviceSelectionScreen(
                                         currentDevices = deviceListForSelectorState.value,
                                         currentPreferredId = preferredDeviceIdState.value,
+                                        onTapSound = { tapSound.play() },
                                         onSave = { deviceId, deviceName, deviceType ->
                                             preferredDeviceStore.setPreferredDevice(deviceId, deviceName, deviceType)
                                             preferredDeviceIdState.value = deviceId
@@ -250,7 +278,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     handlingRedirectState.value -> RedirectHandlingScreen()
-                    else -> InitialScreen(onSignInClick = { spotifyAuth.signIn(BuildConfig.SPOTIFY_CLIENT_ID) })
+                    else -> InitialScreen(
+                        onSignInClick = { spotifyAuth.signIn(BuildConfig.SPOTIFY_CLIENT_ID) },
+                        onTapSound = { tapSound.play() }
+                    )
                 }
             }
         }
@@ -315,6 +346,7 @@ class MainActivity : ComponentActivity() {
         }
         refreshListeningTimeDisplay()
         if (spotifyAuth.hasToken()) {
+            ensureSpotifyOnce()
             val expiresAt = spotifyAuth.getExpiresAtMs()
             if (System.currentTimeMillis() >= expiresAt - REFRESH_WHEN_UNDER_MS) {
                 runProactiveRefreshNow()
@@ -335,6 +367,11 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        tapSound.release()
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -351,9 +388,17 @@ class MainActivity : ComponentActivity() {
             if (savedUrl != null) playlistUrlState.value = savedUrl
             return
         }
-        val savedUrl = nfcPlaylistRepository.getPlaylistUrl(tagId)
+        var savedUrl = nfcPlaylistRepository.getPlaylistUrl(tagId)
+        if (savedUrl != null && (savedUrl.isBlank() || savedUrl == PLAYLIST_NO_ITEM)) {
+            savedUrl = null
+        }
         if (savedUrl != null) {
             playlistUrlState.value = savedUrl
+            if (!savedUrl.startsWith("spotify:", ignoreCase = true)) {
+                Log.w(TAG, "handleTagDetected: saved URL is not a Spotify URI, skipping play: ${savedUrl.take(60)}")
+                return
+            }
+            ensureSpotifyOnce()
             Log.d("HearoPlaylist", "fetching playlist: tagId=$tagId, hasSaved=true, savedUrl=${savedUrl.take(60)}")
             if (spotifyAuth.hasToken()) {
                 if (listeningTimeStore.checkAndApplyMidnightReset()) {
@@ -497,6 +542,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleSpotifyRefreshFailed() {
+        stopProgressPolling()
+        spotifyWebApi.pause { }
+        spotifyController.pause()
         spotifyAuth.signOut()
         signedInState.value = false
         cancelProactiveRefresh()

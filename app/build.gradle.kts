@@ -4,6 +4,27 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val spotifyClientId: String = run {
+    val secretsFile = rootProject.file("spotify.secrets.properties")
+    if (secretsFile.exists()) {
+        secretsFile.readLines()
+            .mapNotNull { line ->
+                val trimmed = line.trim()
+                if (trimmed.startsWith("#")) return@mapNotNull null
+                val eq = trimmed.indexOf('=')
+                if (eq > 0 && trimmed.substring(0, eq).trim() == "SPOTIFY_CLIENT_ID")
+                    trimmed.substring(eq + 1).trim() else null
+            }
+            .firstOrNull().orEmpty()
+    } else {
+        (project.findProperty("SPOTIFY_CLIENT_ID") as? String)?.trim().orEmpty()
+    }
+}.also { id ->
+    if (id.isEmpty()) {
+        logger.warn("Spotify Client ID is empty. Create spotify.secrets.properties in the project root (same folder as build.gradle.kts) with: SPOTIFY_CLIENT_ID=your_id")
+    }
+}
+
 android {
     namespace = "com.example.hearo"
     compileSdk {
@@ -18,7 +39,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"${project.findProperty("SPOTIFY_CLIENT_ID") ?: ""}\"")
+        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"$spotifyClientId\"")
     }
 
     buildTypes {

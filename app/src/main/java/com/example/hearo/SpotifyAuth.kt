@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
+import android.widget.Toast
 import androidx.browser.customtabs.CustomTabsIntent
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -58,7 +59,11 @@ class SpotifyAuth(private val context: Context) {
     }
 
     fun signIn(clientId: String) {
-        if (clientId.isBlank()) return
+        if (clientId.isBlank()) {
+            Log.w(TAG, "signIn: Spotify Client ID is empty. Add it in spotify.secrets.properties (see spotify.secrets.properties.example).")
+            Toast.makeText(context, "Spotify sign-in not configured. Add Client ID in spotify.secrets.properties.", Toast.LENGTH_LONG).show()
+            return
+        }
         val state = java.util.UUID.randomUUID().toString().replace("-", "")
         val (verifier, challenge) = generatePkce()
         tokenStore.setPendingPkce(verifier, state)

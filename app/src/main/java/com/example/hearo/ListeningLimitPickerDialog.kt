@@ -31,6 +31,7 @@ fun ListeningLimitPickerDialog(
     initialLimitSeconds: Int,
     onConfirm: (Int) -> Unit,
     onDismiss: () -> Unit,
+    onTapSound: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val (initHour, initMinute) = listeningLimitSecondsToHourMin(initialLimitSeconds)
@@ -49,6 +50,7 @@ fun ListeningLimitPickerDialog(
             confirmButton = {
                 Button(
                     onClick = {
+                        onTapSound()
                         val seconds = hourMinToListeningLimitSeconds(state.hour, state.minute)
                         onConfirm(seconds)
                     },
@@ -58,7 +60,7 @@ fun ListeningLimitPickerDialog(
                 }
             },
             dismissButton = {
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = { onTapSound(); onDismiss() }) {
                     Text("Cancel")
                 }
             }

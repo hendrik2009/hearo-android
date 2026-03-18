@@ -34,6 +34,7 @@ fun RedirectHandlingScreen() {
 @Composable
 fun InitialScreen(
     onSignInClick: () -> Unit,
+    onTapSound: () -> Unit = {},
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -62,7 +63,7 @@ fun InitialScreen(
             contentAlignment = Alignment.Center,
         ) {
             Button(
-                onClick = onSignInClick,
+                onClick = { onTapSound(); onSignInClick() },
                 modifier = Modifier.widthIn(max = 280.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFFFF0000),

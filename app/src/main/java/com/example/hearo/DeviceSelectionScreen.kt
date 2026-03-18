@@ -30,6 +30,7 @@ fun DeviceSelectionScreen(
     currentPreferredId: String?,
     onSave: (deviceId: String?, deviceName: String?, deviceType: String?) -> Unit,
     onCancel: () -> Unit,
+    onTapSound: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedId by remember(currentPreferredId) {
@@ -53,7 +54,7 @@ fun DeviceSelectionScreen(
                     label = "No Device",
                     id = NO_DEVICE_ID,
                     selected = selectedId == NO_DEVICE_ID,
-                    onClick = { selectedId = NO_DEVICE_ID }
+                    onClick = { onTapSound(); selectedId = NO_DEVICE_ID }
                 )
             }
             items(currentDevices, key = { it.id }) { device ->
@@ -61,7 +62,7 @@ fun DeviceSelectionScreen(
                     label = device.displayLabel(),
                     id = device.id,
                     selected = selectedId == device.id,
-                    onClick = { selectedId = device.id }
+                    onClick = { onTapSound(); selectedId = device.id }
                 )
             }
         }
@@ -72,10 +73,11 @@ fun DeviceSelectionScreen(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onCancel) { Text("Cancel") }
+            TextButton(onClick = { onTapSound(); onCancel() }) { Text("Cancel") }
             Spacer(Modifier.width(8.dp))
             Button(
                 onClick = {
+                    onTapSound()
                     if (selectedId == NO_DEVICE_ID) {
                         onSave(null, null, null)
                     } else {
